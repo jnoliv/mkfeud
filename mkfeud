@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-declare -r VERSION='0.1'
+declare -r VERSION='0.2'
 
 # Modify these values to change mkfeud's behaviour.
 declare -r ROOT_SIZE=512
@@ -64,46 +64,57 @@ main () {
 
     # 1. Pre-installation steps
     # 1.1. Prepare partitions
+    info "Setting up partitions..."
+    
     local -r size4=$(( ROOT_SIZE + SWAP_SIZE ))
 
-    sgdisk --zap-all "$dev"
+    sgdisk --zap-all "$dev" > /dev/null
 
     sgdisk --new=1:0:+1M        --change-name=1:GRUB         --typecode=1:"$GRUB" "$dev" > /dev/null
     sgdisk --new=2:0:+512M      --change-name=2:EFI-SP       --typecode=2:"$ESP"  "$dev" > /dev/null
-    sgdisk --new=3:0:+1.67G     --change-name=3:BOOT         --typecode=3:"$LUKS" "$dev" > /dev/null
+    sgdisk --new=3:0:+1711M     --change-name=3:BOOT         --typecode=3:"$LUKS" "$dev" > /dev/null
     sgdisk --new=4:0:+"$size4"G --change-name=4:rootfs       --typecode=4:"$LUKS" "$dev" > /dev/null
     sgdisk --new=5:0:0          --change-name=5:"$DATA_PART" --typecode=5:"$DATA" "$dev" > /dev/null
 
-    info "Partitions setup."
-    info "$( sgdisk --print "$dev" )"
+    info "Partitions setup:\n$( sgdisk --print "$dev" )\n"
 
     # 1.2. Setup encrypted partitions
+    info "Setting up encryption..."
+    
     cryptsetup luksFormat --type=luks1 "${devp}3"
-    cryptsetup luksFormat              "${devp}4"
+    info "Partition ${devp}3 encryption setup."
 
-    info "Encrypted partitions setup."
+    cryptsetup luksFormat "${devp}4"
+    info "Partition ${devp}4 encryption setup."
 
     # 1.3. Unlock encrypted partitions
-    local -r luks_root="/dev/mapper/${devm}4_crypt"
+    info "Unlocking encrypted partitions (${devp}3 & ${devp}4)..."
+    
+    local -r luks_root="${devm}4_crypt"
 
     cryptsetup open "${devp}3" LUKS_BOOT
+    info "Partition ${devp}3 unlocked."
+    
     cryptsetup open "${devp}4" "$luks_root"
-
-    info "Encrypted partitions unlocked."
+    info "Partition ${devp}4 unlocked."
 
     # 1.4. Format filesystems
-    mkfs.fat -F 32 -S "$(blockdev --getpbsz "$dev")" "${devp}2"
+    info "Formatting filesystems..."
+    
+    mkfs.fat -F 32 -S "$(blockdev --getpbsz "$dev")" "${devp}2"  > /dev/null
     mkntfs --fast --quiet --label "$DATA_PART" -p 0 -H 0 -S 0 "${devp}5"
 
     mkfs.ext4 -q -L boot /dev/mapper/LUKS_BOOT
 
-    info "Encrypted filesystems created."
+    info "Filesystems formatted."
 
     # 1.5. Setup LVM
-    pvcreate "$luks_root"
-    vgcreate vgubuntu "$luks_root"
+    info "Setting up LVM..."
+    
+    pvcreate "/dev/mapper/$luks_root"
+    vgcreate vgubuntu "/dev/mapper/$luks_root"
     lvcreate --name swap_1 --size "$SWAP_SIZE"G vgubuntu
-    lvcreate --name root   --extents %FREE      vgubuntu
+    lvcreate --name root   --extents 100%FREE   vgubuntu
 
     info "LVM setup."
 
@@ -144,23 +155,28 @@ main () {
         chmod u=r,go-rwx /etc/luks/boot_os.keyfile
 
         # 3.5. Add key-file to LUKS volumes
-        cryptsetup luksAddKey ${devp}3 /etc/luks/boot_os.keyfile
-        cryptsetup luksAddKey ${devp}4 /etc/luks/boot_os.keyfile
+        info "Adding key-file to ${devp}3 partition..."
+        cryptsetup luksAddKey "${devp}3" /etc/luks/boot_os.keyfile
+        
+        info "Adding key-file to ${devp}4 partition..."
+        cryptsetup luksAddKey "${devp}4" /etc/luks/boot_os.keyfile
 
         # 3.6. Add keys to the crypttab
-        echo "LUKS_BOOT      UUID=$(blkid -s UUID -o value ${devp}3) /etc/luks/boot_os.keyfile luks,discard"\
-             "${devm}4_crypt UUID=$(blkid -s UUID -o value ${devp}4) /etc/luks/boot_os.keyfile luks,discard" \
+        echo "LUKS_BOOT      UUID=$(blkid -s UUID -o value "${devp}3") /etc/luks/boot_os.keyfile luks,discard"\
+             "${devm}4_crypt UUID=$(blkid -s UUID -o value "${devp}4") /etc/luks/boot_os.keyfile luks,discard" \
             >> /etc/crypttab
 
         # 3.7. Update initramfs files
+        set -x
         update-initramfs -u -k all
+        set +x
     )
 }
 
 waitforuser () {
-    echo "$1"
+    echo -e "\e[0;33m$1"
     read -rsn1 -p "Press any key to continue..."
-    echo
+    echo -e "\e[0m"
 }
 
 get_partition_prefix () {
@@ -173,7 +189,7 @@ get_partition_prefix () {
 
 info () {
     if $VERBOSE; then
-        echo -e "$*" > /dev/tty
+        echo -e "\e[0;32m[INFO] $*\e[0m" > /dev/tty
     fi
 }
 
