@@ -48,6 +48,14 @@ declare -r ROOT_SIZE=512
 declare -r SWAP_SIZE=32
 declare -r DATA_PART="USB Data"
 
+declare -r VERBOSE=true
+
+# GPT partition type GUIDs.
+declare -r GRUB="21686148-6449-6E6F-744E-656564454649"
+declare -r ESP="C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+declare -r LUKS="CA7D7CCB-63ED-4C53-861C-1742536059CC"
+declare -r DATA="EBD0A0A2-B9E5-4433-87C0-68B6B72699C7"
+
 main () {
     local -r dev="$1"
 
@@ -60,15 +68,20 @@ main () {
 
     sgdisk --zap-all "$dev"
 
-    sgdisk --new=1:0:+1M        --change-name=1:GRUB         --typecode=1:21686148-6449-6E6F-744E-656564454649 "$dev"
-    sgdisk --new=2:0:+512M      --change-name=2:EFI-SP       --typecode=2:C12A7328-F81F-11D2-BA4B-00A0C93EC93B "$dev"
-    sgdisk --new=3:0:+1.67G     --change-name=3:BOOT         --typecode=3:CA7D7CCB-63ED-4C53-861C-1742536059CC "$dev"
-    sgdisk --new=4:0:+"$size4"G --change-name=4:rootfs       --typecode=4:CA7D7CCB-63ED-4C53-861C-1742536059CC "$dev"
-    sgdisk --new=5:0:0          --change-name=5:"$DATA_PART" --typecode=5:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "$dev"
+    sgdisk --new=1:0:+1M        --change-name=1:GRUB         --typecode=1:"$GRUB" "$dev" > /dev/null
+    sgdisk --new=2:0:+512M      --change-name=2:EFI-SP       --typecode=2:"$ESP"  "$dev" > /dev/null
+    sgdisk --new=3:0:+1.67G     --change-name=3:BOOT         --typecode=3:"$LUKS" "$dev" > /dev/null
+    sgdisk --new=4:0:+"$size4"G --change-name=4:rootfs       --typecode=4:"$LUKS" "$dev" > /dev/null
+    sgdisk --new=5:0:0          --change-name=5:"$DATA_PART" --typecode=5:"$DATA" "$dev" > /dev/null
+
+    info "Partitions setup."
+    info "$( sgdisk --print "$dev" )"
 
     # 1.2. Setup encrypted partitions
     cryptsetup luksFormat --type=luks1 "${devp}3"
     cryptsetup luksFormat              "${devp}4"
+
+    info "Encrypted partitions setup."
 
     # 1.3. Unlock encrypted partitions
     local -r luks_root="/dev/mapper/${devm}4_crypt"
@@ -76,17 +89,23 @@ main () {
     cryptsetup open "${devp}3" LUKS_BOOT
     cryptsetup open "${devp}4" "$luks_root"
 
+    info "Encrypted partitions unlocked."
+
     # 1.4. Format filesystems
     mkfs.fat -F 32 -S "$(blockdev --getpbsz "$dev")" "${devp}2"
     mkntfs --fast --quiet --label "$DATA_PART" -p 0 -H 0 -S 0 "${devp}5"
 
     mkfs.ext4 -q -L boot /dev/mapper/LUKS_BOOT
 
+    info "Encrypted filesystems created."
+
     # 1.5. Setup LVM
     pvcreate "$luks_root"
     vgcreate vgubuntu "$luks_root"
     lvcreate --name swap_1 --size "$SWAP_SIZE"G vgubuntu
     lvcreate --name root   --extents %FREE      vgubuntu
+
+    info "LVM setup."
 
     # 2. Installation steps
     waitforuser "Start installation and continue after completing all forms."
@@ -109,7 +128,7 @@ main () {
         mount --rbind "/$n" "/target/$n"
     done 
 
-    chroot /target (
+    chroot /target $(
         mount -a
         mkdir -p /etc/luks
 
@@ -149,6 +168,12 @@ get_partition_prefix () {
         echo "$1"p
     else
         echo "$1"
+    fi
+}
+
+info () {
+    if $VERBOSE; then
+        echo -e "$*" > /dev/tty
     fi
 }
 
