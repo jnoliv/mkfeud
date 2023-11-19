@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-declare -r VERSION='0.2'
+declare -r VERSION='0.3'
 
 # Modify these values to change mkfeud's behaviour.
 declare -r ROOT_SIZE=512
@@ -139,13 +139,13 @@ main () {
         mount --rbind "/$n" "/target/$n"
     done 
 
-    chroot /target $(
+    chroot /target /bin/bash -c "
         mount -a
         mkdir -p /etc/luks
 
         # 3.2. Configure initramfs
-        echo "KEYFILE_PATTERN=/etc/luks/*.keyfile" >> /etc/cryptsetup-initramfs/conf-hook 
-        echo "UMASK=0077"                          >> /etc/initramfs-tools/initramfs.conf
+        echo 'KEYFILE_PATTERN=/etc/luks/*.keyfile' >> /etc/cryptsetup-initramfs/conf-hook 
+        echo 'UMASK=0077'                          >> /etc/initramfs-tools/initramfs.conf
 
         # 3.3. Create randomised key-file of 4096 bits
         dd if=/dev/urandom of=/etc/luks/boot_os.keyfile bs=512 count=1
@@ -155,22 +155,20 @@ main () {
         chmod u=r,go-rwx /etc/luks/boot_os.keyfile
 
         # 3.5. Add key-file to LUKS volumes
-        info "Adding key-file to ${devp}3 partition..."
-        cryptsetup luksAddKey "${devp}3" /etc/luks/boot_os.keyfile
-        
-        info "Adding key-file to ${devp}4 partition..."
-        cryptsetup luksAddKey "${devp}4" /etc/luks/boot_os.keyfile
+        echo -e '\e[0;32m[INFO] Adding key-file to ${devp}3 partition...\e[0m'
+        cryptsetup luksAddKey ${devp}3 /etc/luks/boot_os.keyfile
+
+        echo -e '\e[0;32m[INFO] Adding key-file to ${devp}4 partition...\e[0m'
+        cryptsetup luksAddKey ${devp}4 /etc/luks/boot_os.keyfile
 
         # 3.6. Add keys to the crypttab
-        echo "LUKS_BOOT      UUID=$(blkid -s UUID -o value "${devp}3") /etc/luks/boot_os.keyfile luks,discard"\
-             "${devm}4_crypt UUID=$(blkid -s UUID -o value "${devp}4") /etc/luks/boot_os.keyfile luks,discard" \
+        echo 'LUKS_BOOT      UUID=$(blkid -s UUID -o value ${devp}3) /etc/luks/boot_os.keyfile luks,discard
+              ${devm}4_crypt UUID=$(blkid -s UUID -o value ${devp}4) /etc/luks/boot_os.keyfile luks,discard' \
             >> /etc/crypttab
 
         # 3.7. Update initramfs files
-        set -x
         update-initramfs -u -k all
-        set +x
-    )
+    "
 }
 
 waitforuser () {
