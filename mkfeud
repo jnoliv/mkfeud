@@ -23,6 +23,8 @@
 #   https://help.ubuntu.com/community/Full_Disk_Encryption_Howto_2019
 # * All the ArchWiki contributors to this great guide:
 #   https://wiki.archlinux.org/title/dm-crypt/Encrypting_an_entire_system#Encrypted_boot_partition_(GRUB)
+# * Nick Jeppson for this great post on how to chroot into encrypted drive:
+#   https://techblog.jeppson.org/2020/03/chroot-into-encrypted-drive/
 
 # This script creates the following partition structure on the device given by the first argument:
 #
@@ -39,9 +41,28 @@
 # | unencrypted | unencrypted  | encrypted using LUKS1 | /dev/sda4 encrypted using LVM on LUKS2      | unencrypted  |
 # +-------------+--------------+-----------------------+---------------------------------------------+--------------+
 
+# TODO:
+# * Read encryption passphrases once and reuse across the script
+# * Rework verbose logs
+# * Validate given device is not mounted
+# * Validate given device has enough capacity for all the partitions
+# * Clean up at the end
+#   * Unmount chroot directories
+#   * Deactivate LVM volumes
+#   * Close LUKS encrypted partitions
+# * Command line args to:
+#   * Define root partition size
+#   * Define swap partition size
+#   * Use swap partition size equal to RAM of current system (should this be the default behaviour instead?)
+#   * Define the name of the data partition
+# * Track what's been created to clean up if there's an error?
+# * Automate ubuntu install (debootstrap? ubiquity --automatic?)
+# * Require usb hardware key in addition to passphrase to open enrypted boot partition
+# * Configure grub resolution (for easier reading in 4k screens)
+
 set -euo pipefail
 
-declare -r VERSION='0.3'
+declare -r VERSION='0.4'
 
 # Modify these values to change mkfeud's behaviour.
 declare -r ROOT_SIZE=512
@@ -134,6 +155,7 @@ main () {
 
     # 3.1. Create chroot jail on the filesystem of newly installed OS
     mount /dev/mapper/vgubuntu-root /target
+    mount /dev/mapper/LUKS_BOOT /target/boot
 
     for n in proc sys dev etc/resolv.conf; do
         mount --rbind "/$n" "/target/$n"
