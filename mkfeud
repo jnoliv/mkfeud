@@ -28,22 +28,24 @@
 
 # This script creates the following partition structure on the device given by the first argument:
 #
-# +-------------+--------------+-----------------------+----------------------+----------------------+--------------+
-# | GRUB        | EFI-SP       | BOOT                  | Logical volume 1     | Logical volume 2     | USB Data     |
-# |             |              |                       |                      |                      |              |
-# | 1 MiB       | 512 MiB      | 1.6 GiB               | 512 GiB              | 32 GiB               | ~            |
-# |             |              |                       |                      |                      |              |
-# | grub2       | fat32        | ext4                  | lvm2 pv (ext4)       | [SWAP]               | ntfs         |
-# | core.img    | /boot/efi    | /boot                 | /                    |                      |              |
-# |             |              |                       |                      |                      |              |
-# |             |              |                       | /dev/vgubuntu/root   | /dev/vgubuntu/swap_1 |              |
-# | /dev/sda1   | /dev/sda2    | /dev/sda3             |----------------------+----------------------+ /dev/sda5    |
-# | unencrypted | unencrypted  | encrypted using LUKS1 | /dev/sda4 encrypted using LVM on LUKS2      | unencrypted  |
-# +-------------+--------------+-----------------------+---------------------------------------------+--------------+
+# +--------------+-----------------------+----------------------+----------------------+--------------+
+# | EFI-SP       | BOOT                  | Logical volume 1     | Logical volume 2     | USB Data     |
+# |              |                       |                      |                      |              |
+# | 512 MiB      | 1.6 GiB               | 512 GiB              | 32 GiB               | ~            |
+# |              |                       |                      |                      |              |
+# | fat32        | ext4                  | lvm2 pv (ext4)       | [SWAP]               | ntfs         |
+# | /boot/efi    | /boot                 | /                    |                      |              |
+# |              |                       |                      |                      |              |
+# |              |                       | /dev/vgubuntu/root   | /dev/vgubuntu/swap_1 |              |
+# | /dev/sda1    | /dev/sda2             |----------------------+----------------------+ /dev/sda4    |
+# | unencrypted  | encrypted using LUKS1 | /dev/sda3 encrypted using LVM on LUKS2      | unencrypted  |
+# +--------------+-----------------------+---------------------------------------------+--------------+
 
 # TODO:
 # * Rework verbose logs
-# * Validate given device is not mounted
+# * Validate system booted in uefi mode with secure boot enabled (or figure out how to always target that config)
+#   * [ -d /sys/firmware/efi ]
+# * Validate given device is not in use (mounted or open)
 # * Validate given device has enough capacity for all the partitions
 # * Clean up at the end
 #   * Unmount chroot directories
@@ -53,6 +55,8 @@
 # * Automate ubuntu install (debootstrap? ubiquity --automatic?)
 # * Require usb hardware key in addition to passphrase to open enrypted boot partition
 # * Configure grub resolution (for easier reading in 4k screens)
+# * Install grub with the removable flag
+# * Install grub with support for SecureBoot regardless of how current system was booted
 
 set -euo pipefail
 
@@ -90,9 +94,10 @@ OPTIONS:
 
 main () {
     parse_args "$@"
+    validate
 
-    declare -gr PASS_BOOT=$( read_passphrase "${DEVP}3 (boot)" )
-    declare -gr PASS_ROOT=$( read_passphrase "${DEVP}4 (root)" )
+    declare -gr PASS_BOOT=$( read_passphrase "${DEVP}2 (boot)" )
+    declare -gr PASS_ROOT=$( read_passphrase "${DEVP}3 (root)" )
 
     setup_partitions
     enable_grub_cryptodisk
@@ -166,8 +171,21 @@ parse_args () {
 
     declare -gr DEV="$1"
 
-    declare -gr DEVP="$( get_partition_prefix $DEV )"
-    declare -gr DEVM="$( get_partition_prefix ${DEV##*/} )"
+    declare -gr DEVP="$( get_partition_prefix "$DEV" )"
+    declare -gr DEVM="$( get_partition_prefix "${DEV##*/}" )"
+}
+
+validate () {
+    local -r mounted=$(df | grep "$DEV" | cut -d' ' -f1)
+
+    if [ -n "$mounted" ]; then
+        echo "Device has mounted partitions!"
+        exit "$EX_MOUNTED"
+    fi
+
+    if [ "$( mokutil --sb-state )" -ne "SecureBoot enabled" ]; then
+        echo_yellow "Current system not booted using SecureBoot. You may encounter issues booting from the USB with SecureBoot enabled!"
+    fi
 }
 
 setup_partitions () {
@@ -179,39 +197,38 @@ setup_partitions () {
 
     sgdisk --zap-all "$DEV" > /dev/null
 
-    sgdisk --new=1:0:+1M        --change-name=1:GRUB         --typecode=1:"$GRUB" "$DEV" > /dev/null
-    sgdisk --new=2:0:+512M      --change-name=2:EFI-SP       --typecode=2:"$ESP"  "$DEV" > /dev/null
-    sgdisk --new=3:0:+1711M     --change-name=3:BOOT         --typecode=3:"$LUKS" "$DEV" > /dev/null
-    sgdisk --new=4:0:+"$size4"G --change-name=4:rootfs       --typecode=4:"$LUKS" "$DEV" > /dev/null
-    sgdisk --new=5:0:0          --change-name=5:"$DATA_PART" --typecode=5:"$DATA" "$DEV" > /dev/null
+    sgdisk --new=1:0:+512M      --change-name=1:EFI-SP       --typecode=1:"$ESP"  "$DEV" > /dev/null
+    sgdisk --new=2:0:+1711M     --change-name=2:BOOT         --typecode=2:"$LUKS" "$DEV" > /dev/null
+    sgdisk --new=3:0:+"$size4"G --change-name=3:rootfs       --typecode=3:"$LUKS" "$DEV" > /dev/null
+    sgdisk --new=4:0:0          --change-name=4:"$DATA_PART" --typecode=4:"$DATA" "$DEV" > /dev/null
 
     info "Partitions setup:\n$( sgdisk --print "$DEV" )\n"
 
     # 1.2. Setup encrypted partitions
     info "Setting up encryption..."
     
-    echo -n "$PASS_BOOT" | cryptsetup luksFormat -q --type=luks1 "${DEVP}3"
+    echo -n "$PASS_BOOT" | cryptsetup luksFormat -q --type=luks1 "${DEVP}2"
+    info "Partition ${DEVP}2 encryption setup."
+
+    echo -n "$PASS_ROOT" | cryptsetup luksFormat -q "${DEVP}3"
     info "Partition ${DEVP}3 encryption setup."
 
-    echo -n "$PASS_ROOT" | cryptsetup luksFormat -q "${DEVP}4"
-    info "Partition ${DEVP}4 encryption setup."
-
     # 1.3. Unlock encrypted partitions
-    info "Unlocking encrypted partitions (${DEVP}3 & ${DEVP}4)..."
+    info "Unlocking encrypted partitions (${DEVP}2 & ${DEVP}3)..."
     
-    local -r luks_root="${DEVM}4_crypt"
+    local -r luks_root="${DEVM}3_crypt"
 
-    echo -n "$PASS_BOOT" | cryptsetup open "${DEVP}3" LUKS_BOOT
-    info "Partition ${DEVP}3 unlocked."
+    echo -n "$PASS_BOOT" | cryptsetup open "${DEVP}2" LUKS_BOOT
+    info "Partition ${DEVP}2 unlocked."
     
-    echo -n "$PASS_ROOT" | cryptsetup open "${DEVP}4" "$luks_root"
-    info "Partition ${DEVP}4 unlocked."
+    echo -n "$PASS_ROOT" | cryptsetup open "${DEVP}3" "$luks_root"
+    info "Partition ${DEVP}3 unlocked."
 
     # 1.4. Format filesystems
     info "Formatting filesystems..."
     
-    mkfs.fat -F 32 -S "$(blockdev --getpbsz "$DEV")" "${DEVP}2"  > /dev/null
-    mkntfs --fast --quiet --label "$DATA_PART" -p 0 -H 0 -S 0 "${DEVP}5"
+    mkfs.fat -F 32 -S "$(blockdev --getpbsz "$DEV")" "${DEVP}1"  > /dev/null
+    mkntfs --fast --quiet --label "$DATA_PART" -p 0 -H 0 -S 0 "${DEVP}4"
 
     mkfs.ext4 -q -L boot /dev/mapper/LUKS_BOOT
 
@@ -269,15 +286,15 @@ configure_encrypted_boot () {
         chmod u=r,go-rwx /etc/luks/boot_os.keyfile
 
         # 3.5. Add key-file to LUKS volumes
-        echo -e '\e[0;32m[INFO] Adding key-file to ${DEVP}3 partition...\e[0m'
-        echo -n \"$PASS_BOOT\" | cryptsetup luksAddKey \"${DEVP}3\" /etc/luks/boot_os.keyfile
+        echo -e '\e[0;32m[INFO] Adding key-file to ${DEVP}2 partition...\e[0m'
+        echo -n \"$PASS_BOOT\" | cryptsetup luksAddKey \"${DEVP}2\" /etc/luks/boot_os.keyfile
 
-        echo -e '\e[0;32m[INFO] Adding key-file to ${DEVP}4 partition...\e[0m'
-        echo -n \"$PASS_ROOT\" | cryptsetup luksAddKey \"${DEVP}4\" /etc/luks/boot_os.keyfile
+        echo -e '\e[0;32m[INFO] Adding key-file to ${DEVP}3 partition...\e[0m'
+        echo -n \"$PASS_ROOT\" | cryptsetup luksAddKey \"${DEVP}3\" /etc/luks/boot_os.keyfile
 
         # 3.6. Add keys to the crypttab
-        echo 'LUKS_BOOT      UUID=$(blkid -s UUID -o value ${DEVP}3) /etc/luks/boot_os.keyfile luks,discard
-              ${DEVM}4_crypt UUID=$(blkid -s UUID -o value ${DEVP}4) /etc/luks/boot_os.keyfile luks,discard' \
+        echo 'LUKS_BOOT      UUID=$(blkid -s UUID -o value ${DEVP}2) /etc/luks/boot_os.keyfile luks,discard
+              ${DEVM}3_crypt UUID=$(blkid -s UUID -o value ${DEVP}3) /etc/luks/boot_os.keyfile luks,discard' \
             >> /etc/crypttab
 
         # 3.7. Update initramfs files
