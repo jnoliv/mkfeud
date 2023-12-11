@@ -43,7 +43,7 @@ Shim is a simple first-stage bootloader containing embedded keys specific to a l
 
 [^6]: https://wiki.ubuntu.com/UEFI/SecureBoot#How_UEFI_Secure_Boot_works_on_Ubuntu
 
-Note that when mkfeud is used to build bootable removable drives, a copy of shim must exist in the UEFI boot fallback path[^7]. This is because a removable drive must be bootable on machines which don't have an NVRAM entry to boot from it.
+An important detail is that when mkfeud is used to build bootable removable drives, a copy of shim must exist in the UEFI boot fallback path[^7]. This is because a removable drive must be bootable on machines which don't have an NVRAM entry to boot from it.
 
 [^7]: https://en.wikipedia.org/wiki/UEFI#UEFI_booting
 
@@ -67,8 +67,6 @@ After the kernel is loaded, it will extract the initramfs archive (loaded into m
 
 ### Conclusion
 
-If the above achieved it's purpose of providing context on the Ubuntu boot process, you will be confident that (with SecureBoot enabled) the shim, grub2 and kernel code has not been tampered with. However, you may have noticed how initramfs is not signed and thus remains vulnerable to attacks[^11]. By encrypting the */boot* partition, unauthorized access to initramfs is blocked, which should give you full confidence the entirety of the boot process has not been tampered with.
+If the above achieved its purpose of providing context on the Ubuntu boot process, you will be confident that (with SecureBoot enabled) the shim, grub2 and kernel code has not been tampered with. However, you may have noticed how initramfs is not signed and thus remains vulnerable to attacks[^11]. By encrypting the */boot* partition, unauthorized access to initramfs is blocked, which should give you full confidence the entirety of the boot process has not been tampered with.
 
 [^11]: https://twopointfouristan.wordpress.com/2011/04/17/pwning-past-whole-disk-encryption/
-
-
