@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+# https://techblog.jeppson.org/2020/03/chroot-into-encrypted-drive/
+
+set -euo pipefail
+
+get_partition_prefix () {
+    if [[ $1 =~ [0-9]$ ]]; then
+        echo "$1"p
+    else
+        echo "$1"
+    fi
+}
+
+DEV="$1"
+
+DEVP="$( get_partition_prefix $DEV )"
+DEVM="$( get_partition_prefix ${DEV##*/} )"
+
+
+cryptsetup open "${DEVP}3" LUKS_BOOT
+cryptsetup open "${DEVP}4" "${DEVM}4_crypt"
+
+vgchange -ay
+
+
+mkdir -p /mnt/chroot
+
+mount /dev/mapper/vgubuntu-root /mnt/chroot
+mount /dev/mapper/LUKS_BOOT 	/mnt/chroot/boot
+mount "${DEVP}2" 		/mnt/chroot/boot/efi
+
+for n in proc sys dev etc/resolv.conf; do
+    mount --rbind "/$n" "/mnt/chroot/$n"
+done
+
+
+chroot /mnt/chroot /bin/bash -c "
+	grub-install --no-nvram --removable --uefi-secure-boot
+	update-grub
+	update-initramfs -u -k all
+"
+
+
+for n in etc/resolv.conf dev sys proc boot ''; do
+    umount "/mnt/chroot/$n"
+done
+
+
+vgchange -an
+
+cryptsetup close LUKS_BOOT
+cryptsetup close "${DEVM}4_crypt"
+
