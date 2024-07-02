@@ -28,18 +28,18 @@
 
 # This script creates the following partition structure on the device given by the first argument:
 #
-# +--------------+-----------------------+----------------------+----------------------+--------------+
-# | EFI-SP       | BOOT                  | Logical volume 1     | Logical volume 2     | USB Data     |
-# |              |                       |                      |                      |              |
-# | 512 MiB      | 1.6 GiB               | 512 GiB              | 32 GiB               | ~            |
-# |              |                       |                      |                      |              |
-# | fat32        | ext4                  | lvm2 pv (ext4)       | [SWAP]               | ntfs         |
-# | /boot/efi    | /boot                 | /                    |                      |              |
-# |              |                       |                      |                      |              |
-# |              |                       | /dev/vgubuntu/root   | /dev/vgubuntu/swap_1 |              |
-# | /dev/sda1    | /dev/sda2             |----------------------+----------------------+ /dev/sda4    |
-# | unencrypted  | encrypted using LUKS1 | /dev/sda3 encrypted using LVM on LUKS2      | unencrypted  |
-# +--------------+-----------------------+---------------------------------------------+--------------+
+# +--------------+-----------------------+----------------------+-----------------------+--------------+
+# | EFI-SP       | BOOT                  | Logical volume 1     | Logical volume 2      | USB Data     |
+# |              |                       |                      |                       |              |
+# | 512 MiB      | 1.6 GiB               | 512 GiB              | 32 GiB                | ~            |
+# |              |                       |                      |                       |              |
+# | fat32        | ext4                  | lvm2 pv (ext4)       | [SWAP]                | ntfs         |
+# | /boot/efi    | /boot                 | /                    |                       |              |
+# |              |                       |                      |                       |              |
+# |              |                       | /dev/vgusbuntu/root  | /dev/vgusbuntu/swap_1 |              |
+# | /dev/sda1    | /dev/sda2             |----------------------+-----------------------+ /dev/sda4    |
+# | unencrypted  | encrypted using LUKS1 | /dev/sda3 encrypted using LVM on LUKS2       | unencrypted  |
+# +--------------+-----------------------+----------------------------------------------+--------------+
 
 # TODO:
 # * Rework verbose logs
@@ -73,6 +73,9 @@ declare -r GRUB="21686148-6449-6E6F-744E-656564454649"
 declare -r ESP="C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
 declare -r LUKS="CA7D7CCB-63ED-4C53-861C-1742536059CC"
 declare -r DATA="EBD0A0A2-B9E5-4433-87C0-68B6B72699C7"
+
+# LVM VG name.
+declare -r VG_NAME="vgusbuntu"
 
 usage() {
   echo \
@@ -183,7 +186,7 @@ validate () {
         exit "$EX_MOUNTED"
     fi
 
-    if [ "$( mokutil --sb-state )" -ne "SecureBoot enabled" ]; then
+    if [ "$( mokutil --sb-state )" != "SecureBoot enabled" ]; then
         echo_yellow "Current system not booted using SecureBoot. You may encounter issues booting from the USB with SecureBoot enabled!"
     fi
 }
@@ -238,9 +241,9 @@ setup_partitions () {
     info "Setting up LVM..."
     
     pvcreate "/dev/mapper/$luks_root"
-    vgcreate vgubuntu "/dev/mapper/$luks_root"
-    lvcreate --name swap_1 --size "$SWAP_SIZE"G vgubuntu
-    lvcreate --name root   --extents 100%FREE   vgubuntu
+    vgcreate "$VG_NAME" "/dev/mapper/$luks_root"
+    lvcreate --name swap_1 --size "$SWAP_SIZE"G "$VG_NAME"
+    lvcreate --name root   --extents 100%FREE   "$VG_NAME"
 
     info "LVM setup."
 }
@@ -263,7 +266,7 @@ configure_encrypted_boot () {
     waitforuser "Let installation finish and continue after selecting \"Continue Testing\"."
 
     # 3.1. Create chroot jail on the filesystem of newly installed OS
-    mount /dev/mapper/vgubuntu-root /target
+    mount /dev/mapper/"$VG_NAME"-root /target
     mount /dev/mapper/LUKS_BOOT /target/boot
 
     for n in proc sys dev etc/resolv.conf; do
